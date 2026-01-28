@@ -1,0 +1,29 @@
+{
+  "latestVersion": "3.6",
+  "updateURL": "https://raw.githubusercontent.com/wfxx2026/exam-helper-auto-update/main/main.user.js",
+  "downloadURL": "https://raw.githubusercontent.com/wfxx2026/exam-helper-auto-update/main/main.user.js",
+  "forceUpdate": false,
+  "changelog": [
+    {
+      "version": "3.6",
+      "date": "2026-01-28",
+      "content": [
+        "✅ 新增GitHub在线自动更新功能，支持自动检测+一键升级",
+        "⚡ 优化30题答题逻辑，适配更多考试页面结构",
+        "📤 完善自动交卷流程，新增SleepClose函数调用，适配结束考试按钮",
+        "🔐 强化身份证双重验证稳定性，修复页面身份匹配bug"
+      ]
+    },
+    {
+      "version": "3.5",
+      "date": "2026-01-20",
+      "content": [
+        "🎯 适配30题考试页面，答题速度优化至0.1秒/题",
+        "🔥 新增视频题页面特殊模式，自动调整控件透明度",
+        "✅ 修复多选题答案填充bug，支持A-G多选项"
+      ]
+    }
+  ],
+  "author": "晚风叙信",
+  "supportUrl": "https://github.com/wfxx2026/exam-helper-auto-update/issues"
+}
