@@ -25,9 +25,10 @@
         stopBtn: null,
         checkBtn: null,
         infoBtn: null,
-        statusDiv: null
+        statusDiv: null,
+        rankBtn: null
     };
-    window._autoSubmitEnabled = false; // 自动交卷开关
+    window._autoSubmitEnabled = false;
     
     // ==================== 身份证授权系统（双重验证版） ====================
     const IDCardAuth = {
@@ -36,7 +37,7 @@
         ],
         config: {
             expireDate: "2026-12-31",
-            version: "3.6",
+            version: "3.7",
             maxActivations: 50,
             activationLockHours: 24
         },
@@ -356,12 +357,456 @@
             return this.encryptedIDs.length;
         }
     };
+    
+    // ==================== 排名查询功能 ====================
+    const RankQuery = {
+        // 兼容版padStart
+        padStart: (str, length, padChar = '0') => String(str).padStart(length, padChar),
+        
+        // 加密函数（平台接口必填）
+        esdt: (code) => {
+            let c = "";
+            const l = [];
+            for (const char of code) {
+                const temp = char.charCodeAt(0);
+                l.push(String(temp.toString().length));
+                c += String(temp);
+            }
+            return `${c}^${l.join(',')}`;
+        },
+        
+        // 日期工具（获取当月起止日期）
+        getMonthDateRange: () => {
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth();
+            const beginDate = `${year}-${RankQuery.padStart(month + 1, 2)}-01`;
+            const endDate = new Date(year, month + 1, 0);
+            const endDateStr = `${endDate.getFullYear()}-${RankQuery.padStart(endDate.getMonth() + 1, 2, '0')}-${RankQuery.padStart(endDate.getDate(), 2, '0')}`;
+            return { beginDate, endDateStr };
+        },
+        
+        // PushPlus推送
+        async sendPushPlusMsg(msg) {
+            const token = "658dcbe6a91f480f99ec181e6c633221";
+            const url = "https://www.pushplus.plus/send";
+            try {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        token: token,
+                        title: "全员答题积分排名查询通知",
+                        content: msg.replace(/\n/g, "<br>"),
+                        template: "html",
+                        channel: "wechat"
+                    }),
+                    mode: "cors",
+                    cache: "no-cache"
+                });
+
+                const resData = await res.json();
+                if (resData.code === 200) {
+                    alert("✅ 排名积分已推送至PushPlus（微信可查）");
+                    return true;
+                } else {
+                    alert(`⚠️ 推送失败：${resData.msg}`);
+                    return false;
+                }
+            } catch (err) {
+                alert(`❌ 推送网络错误：${err.message}\n建议：确认手机能访问PushPlus官网`);
+                return false;
+            }
+        },
+        
+        // 消息格式化
+        formatMsg(userRankData, totalUsers, rank) {
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth() + 1;
+            
+            let msg = `<h3>📊 澄合矿山救护队全员答题月度积分排名</h3>`;
+            msg += `<p>📅 统计月份：${year}年${month}月</p>`;
+            msg += `<hr style="border:1px solid #eee;">`;
+            
+            if (!userRankData) {
+                msg += `<p style="color:red;">❌ 未找到您的排名数据</p>`;
+            } else {
+                msg += `<table border="1" bordercolor="#eee" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">`;
+                msg += `<tr style="background:#f5f5f5;"><th>排名</th><th>姓名</th><th>部门</th><th>积分</th></tr>`;
+                
+                const name = userRankData.PersonName || userRankData.name || '未知用户';
+                const dept = userRankData.DepartmentFullName || userRankData.deptName || userRankData.DepartmentName || '未知部门';
+                const score = userRankData.AllCount || userRankData.totalScore || userRankData.Score || 0;
+                
+                msg += `<tr><td>${rank}</td><td>${name}</td><td>${dept}</td><td>${score}</td></tr>`;
+                msg += `</table>`;
+                msg += `<p style="margin-top:10px;">📈 总参与人数：${totalUsers}</p>`;
+            }
+            
+            msg += `<hr style="border:1px solid #eee;">`;
+            msg += `<p>💡 数据来源：陕西煤业-素质兴安平台</p>`;
+            return msg;
+        },
+        
+        // 获取当前页面的Cookie
+        getCurrentCookie: () => {
+            return document.cookie || '';
+        },
+        
+        // 获取当前用户信息（从页面中提取）
+        getCurrentUserInfo: () => {
+            console.log("🔍 尝试从页面获取用户信息...");
+            
+            // 优先尝试从常见位置获取用户名
+            const nameSelectors = [
+                "#PersonName", ".person-name", "[name='PersonName']",
+                "#UserName", ".user-name", "[name='UserName']",
+                "#name", ".name", "[name='name']",
+                ".user-info", ".exam-user", ".user-info span",
+                "h1", "h2", "h3", ".title",
+                "td", ".td-text", ".info-text"
+            ];
+            
+            let userName = "";
+            let userIdCard = IDCardAuth.getPageIDCard();
+            
+            // 尝试获取用户名
+            for (const selector of nameSelectors) {
+                try {
+                    const elements = document.querySelectorAll(selector);
+                    for (const element of elements) {
+                        if (element && element.offsetParent !== null) { // 确保元素可见
+                            const text = element.textContent || element.innerText || element.value || "";
+                            const cleanText = text.trim().replace(/\s+/g, ' ');
+                            if (cleanText && cleanText.length > 1 && cleanText.length < 20) {
+                                // 排除非姓名的文本
+                                const excludeKeywords = ['登录', '注册', '密码', '首页', '返回', '确定', '取消', '提交', '搜索', '查询'];
+                                const isExcluded = excludeKeywords.some(keyword => cleanText.includes(keyword));
+                                if (!isExcluded && !cleanText.match(/^[\d\s]+$/) && !cleanText.includes('@')) {
+                                    console.log(`✅ 找到可能的用户名: "${cleanText}" (选择器: ${selector})`);
+                                    userName = cleanText;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (userName) break;
+                } catch (e) {
+                    console.log(`选择器 ${selector} 查询出错:`, e);
+                }
+            }
+            
+            // 如果没有找到用户名，尝试从页面文本中查找
+            if (!userName) {
+                console.log("⚠️ 未通过选择器找到用户名，尝试从页面文本中查找...");
+                const allText = document.body.innerText || document.body.textContent || '';
+                const lines = allText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+                
+                // 常见的中文姓名模式
+                const namePatterns = [
+                    /姓名[:：]\s*([^\s]{2,4})/,
+                    /姓名\s*[:：]\s*([^\s]{2,4})/,
+                    /([\u4e00-\u9fa5]{2,4})\s*同志/,
+                    /([\u4e00-\u9fa5]{2,4})\s*先生/,
+                    /([\u4e00-\u9fa5]{2,4})\s*女士/,
+                    /欢迎,\s*([\u4e00-\u9fa5]{2,4})/,
+                    /用户[:：]\s*([^\s]{2,4})/,
+                    /用户\s*[:：]\s*([^\s]{2,4})/
+                ];
+                
+                for (const line of lines) {
+                    for (const pattern of namePatterns) {
+                        const match = line.match(pattern);
+                        if (match && match[1]) {
+                            console.log(`✅ 通过正则找到用户名: "${match[1]}"`);
+                            userName = match[1];
+                            break;
+                        }
+                    }
+                    if (userName) break;
+                }
+            }
+            
+            return {
+                name: userName || "未知用户",
+                idCard: userIdCard
+            };
+        },
+        
+        // 查找用户排名 - 改进的匹配逻辑
+        findUserInRankData: function(data, userInfo) {
+            if (!data || !Array.isArray(data) || data.length === 0) {
+                console.log("❌ 排名数据为空或格式错误");
+                return null;
+            }
+            
+            console.log("🔍 开始匹配用户信息...");
+            console.log("用户信息:", userInfo);
+            
+            // 查看数据结构（调试用）
+            const firstItem = data[0];
+            console.log("排名数据结构示例:", Object.keys(firstItem));
+            
+            // 收集所有可能的字段名
+            const fields = Object.keys(firstItem);
+            console.log("可用字段:", fields);
+            
+            // 查找可能的姓名字段
+            const nameFields = fields.filter(f => 
+                f.toLowerCase().includes('name') || 
+                f.toLowerCase().includes('person') ||
+                f.toLowerCase().includes('xm') ||
+                f.includes('姓名') ||
+                f.includes('Name')
+            );
+            console.log("可能的姓名字段:", nameFields);
+            
+            // 查找可能的身份证字段
+            const idFields = fields.filter(f => 
+                f.toLowerCase().includes('idcard') || 
+                f.toLowerCase().includes('card') ||
+                f.toLowerCase().includes('sfzh') ||
+                f.includes('身份证') ||
+                f.includes('Card')
+            );
+            console.log("可能的身份证字段:", idFields);
+            
+            // 查找可能的部门字段
+            const deptFields = fields.filter(f => 
+                f.toLowerCase().includes('dept') || 
+                f.toLowerCase().includes('department') ||
+                f.includes('部门') ||
+                f.includes('单位')
+            );
+            console.log("可能的部门字段:", deptFields);
+            
+            // 尝试多种匹配策略
+            for (let i = 0; i < data.length; i++) {
+                const item = data[i];
+                
+                // 1. 首先尝试通过身份证号精确匹配
+                if (userInfo.idCard) {
+                    for (const field of idFields) {
+                        const fieldValue = String(item[field] || '').trim().toUpperCase();
+                        if (fieldValue === userInfo.idCard) {
+                            console.log(`✅ 通过身份证号精确匹配成功 (${field}: ${fieldValue})`);
+                            return { index: i, data: item };
+                        }
+                        
+                        // 尝试模糊匹配（身份证号部分匹配）
+                        if (fieldValue && fieldValue.includes(userInfo.idCard.substring(6, 14))) {
+                            console.log(`✅ 通过身份证号模糊匹配成功 (${field}: ${fieldValue})`);
+                            return { index: i, data: item };
+                        }
+                    }
+                }
+                
+                // 2. 尝试通过姓名精确匹配
+                if (userInfo.name && userInfo.name !== "未知用户") {
+                    for (const field of nameFields) {
+                        const fieldValue = String(item[field] || '').trim();
+                        if (fieldValue === userInfo.name) {
+                            console.log(`✅ 通过姓名精确匹配成功 (${field}: ${fieldValue})`);
+                            return { index: i, data: item };
+                        }
+                    }
+                }
+                
+                // 3. 尝试通过姓名包含匹配
+                if (userInfo.name && userInfo.name !== "未知用户") {
+                    for (const field of nameFields) {
+                        const fieldValue = String(item[field] || '').trim();
+                        if (fieldValue && userInfo.name.includes(fieldValue)) {
+                            console.log(`✅ 通过姓名包含匹配成功 (${field}: ${fieldValue})`);
+                            return { index: i, data: item };
+                        }
+                        if (fieldValue && fieldValue.includes(userInfo.name)) {
+                            console.log(`✅ 通过字段包含姓名匹配成功 (${field}: ${fieldValue})`);
+                            return { index: i, data: item };
+                        }
+                    }
+                }
+                
+                // 4. 尝试通过姓名的部分匹配（比如去掉姓氏）
+                if (userInfo.name && userInfo.name !== "未知用户" && userInfo.name.length > 1) {
+                    const nameWithoutFirstChar = userInfo.name.substring(1);
+                    if (nameWithoutFirstChar.length > 0) {
+                        for (const field of nameFields) {
+                            const fieldValue = String(item[field] || '').trim();
+                            if (fieldValue && fieldValue.includes(nameWithoutFirstChar)) {
+                                console.log(`✅ 通过姓名部分匹配成功 (${field}: ${fieldValue})`);
+                                return { index: i, data: item };
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 5. 如果以上都没匹配到，尝试显示前几条数据供用户确认
+            console.log("⚠️ 自动匹配失败，显示前5条数据供参考:");
+            for (let i = 0; i < Math.min(5, data.length); i++) {
+                const item = data[i];
+                const name = nameFields.map(f => item[f]).find(v => v) || '未知';
+                const dept = deptFields.map(f => item[f]).find(v => v) || '未知';
+                console.log(`  第${i+1}条: ${name} - ${dept}`);
+            }
+            
+            return null;
+        },
+        
+        // 核心查询逻辑 - 查询当前用户排名
+        async queryMyRanking() {
+            const statusDiv = document.getElementById('exam-helper-status');
+            if (statusDiv) {
+                statusDiv.textContent = '正在查询排名...';
+                statusDiv.className = 'exam-helper-status show';
+            }
+            
+            const { beginDate, endDateStr } = this.getMonthDateRange();
+            const url = "http://61.150.84.25:100/ArchiveManger/D_PersonAccumulate/GetAccumulateRankingListOne";
+            
+            // 获取当前用户信息
+            const userInfo = this.getCurrentUserInfo();
+            console.log("当前用户信息:", userInfo);
+            
+            if (!userInfo.idCard) {
+                console.warn("⚠️ 未获取到身份证号，将尝试通过姓名匹配");
+            }
+            
+            const data = new URLSearchParams();
+            data.append("pid", this.esdt("5bc4ffbb-a00d-479f-a72b-7455cbc539f8"));
+            data.append("page", "1");
+            data.append("rows", "200"); // 获取200条数据
+            data.append("begin", this.esdt(beginDate));
+            data.append("end", this.esdt(endDateStr));
+            data.append("type", "1"); // 1=本单位
+            
+            try {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Cookie": this.getCurrentCookie(),
+                        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
+                        "Referer": "http://61.150.84.25:100/PersonWap/Index",
+                        "X-Requested-With": "XMLHttpRequest"
+                    },
+                    body: data,
+                    credentials: "include"
+                });
+
+                if (!res.ok) {
+                    throw new Error(`平台接口请求失败（状态码：${res.status}）`);
+                }
+                
+                const resData = await res.json();
+                console.log("排名接口返回数据:", resData);
+                
+                if (!resData.data || !resData.data.length) {
+                    alert("❌ 暂无排名数据\n可能本月尚未有人参与答题");
+                    if (statusDiv) statusDiv.className = 'exam-helper-status';
+                    return;
+                }
+                
+                // 查找当前用户
+                const userMatch = this.findUserInRankData(resData.data, userInfo);
+                
+                if (userMatch) {
+                    const userRankData = userMatch.data;
+                    const rank = userMatch.index + 1;
+                    
+                    // 显示结果
+                    const rankMsg = `📊 您的月度排名查询结果\n` +
+                                   `🏆 排名：第 ${rank} 名\n` +
+                                   `👤 姓名：${userRankData.PersonName || userRankData.name || '未知'}\n` +
+                                   `🏢 部门：${userRankData.DepartmentFullName || userRankData.deptName || userRankData.DepartmentName || '未知'}\n` +
+                                   `⭐ 积分：${userRankData.AllCount || userRankData.totalScore || userRankData.Score || 0}\n` +
+                                   `📈 总人数：${resData.total || resData.data.length}\n` +
+                                   `📅 统计周期：${beginDate} 至 ${endDateStr}`;
+                    
+                    alert(rankMsg);
+                    
+                    // 询问是否推送
+                    const needPush = confirm("🔔 是否将排名结果推送至PushPlus？");
+                    if (needPush) {
+                        const htmlMsg = this.formatMsg(userRankData, resData.total || resData.data.length, rank);
+                        await this.sendPushPlusMsg(htmlMsg);
+                    }
+                    
+                    if (statusDiv) {
+                        statusDiv.textContent = `✅ 排名查询完成：第${rank}名`;
+                        setTimeout(() => {
+                            statusDiv.className = 'exam-helper-status';
+                        }, 3000);
+                    }
+                } else {
+                    // 显示排名数据让用户手动查找
+                    let previewText = "🔍 未自动匹配到您的排名，以下是前10名数据：\n\n";
+                    for (let i = 0; i < Math.min(10, resData.data.length); i++) {
+                        const item = resData.data[i];
+                        const name = item.PersonName || item.name || '未知';
+                        const dept = item.DepartmentFullName || item.deptName || item.DepartmentName || '未知';
+                        const score = item.AllCount || item.totalScore || item.Score || 0;
+                        previewText += `${i+1}. ${name} - ${dept} - ${score}分\n`;
+                    }
+                    
+                    previewText += `\n📊 总数据量：${resData.data.length}条\n`;
+                    previewText += `\n可能原因：\n1. 您本月尚未参与答题\n2. 系统数据尚未更新\n3. 用户信息不匹配`;
+                    
+                    alert(previewText);
+                    
+                    // 提供手动搜索选项
+                    const userInput = prompt("请输入您的姓名进行手动搜索（支持模糊搜索）:", userInfo.name);
+                    if (userInput && userInput.trim()) {
+                        // 手动搜索
+                        let found = false;
+                        for (let i = 0; i < resData.data.length; i++) {
+                            const item = resData.data[i];
+                            const itemName = item.PersonName || item.name || '';
+                            if (itemName && itemName.includes(userInput.trim())) {
+                                const rankMsg = `✅ 找到匹配结果：\n` +
+                                              `🏆 排名：第 ${i+1} 名\n` +
+                                              `👤 姓名：${itemName}\n` +
+                                              `🏢 部门：${item.DepartmentFullName || item.deptName || item.DepartmentName || '未知'}\n` +
+                                              `⭐ 积分：${item.AllCount || item.totalScore || item.Score || 0}`;
+                                alert(rankMsg);
+                                found = true;
+                                
+                                // 询问是否推送
+                                const needPush = confirm("🔔 是否将排名结果推送至PushPlus？");
+                                if (needPush) {
+                                    const htmlMsg = this.formatMsg(item, resData.data.length, i+1);
+                                    await this.sendPushPlusMsg(htmlMsg);
+                                }
+                                break;
+                            }
+                        }
+                        
+                        if (!found) {
+                            alert("❌ 未找到匹配的姓名，请确认输入正确");
+                        }
+                    }
+                    
+                    if (statusDiv) statusDiv.className = 'exam-helper-status';
+                }
+                
+            } catch (err) {
+                console.error("排名查询错误:", err);
+                alert(`查询失败：${err.message}\n请检查网络连接或稍后重试`);
+                if (statusDiv) statusDiv.className = 'exam-helper-status';
+            }
+        }
+    };
+
     // ==================== 主程序 ====================
-    console.log('🚀 启动全员答题系统 v3.6（适配30题+GitHub更新）');
+    console.log('🚀 启动全员答题系统 v3.7（适配30题+排名查询）');
+    
     if (window._examHelperInitialized) {
         console.log('⚠️ 脚本已初始化，跳过重复执行');
         return;
     }
+    
     const authStatus = IDCardAuth.checkAuthorization();
     if (authStatus.status === "authorized") {
         console.log('✅ 身份证双重验证通过，加载答题功能...');
@@ -382,6 +827,918 @@
         console.log('🔐 需要授权，显示授权界面...');
         showIDCardAuth();
     }
+
+    // ==================== 主功能（适配30题） ====================
+    function initializeMainProgram() {
+        console.log('🎯 初始化答题功能（适配30题）...');
+        const authStatus = IDCardAuth.checkAuthorization();
+        if (authStatus.status !== "authorized") {
+            console.error('❌ 授权状态异常，无法初始化答题功能');
+            return;
+        }
+        
+        if (!IDCardAuth.isVideoPage()) {
+            const pageValidation = IDCardAuth.validatePageIDCard(authStatus.idCard);
+            if (!pageValidation.valid) {
+                console.error('❌ 页面身份证号验证失败，无法使用答题功能');
+                showPageVerificationRequired(authStatus.idCard);
+                return;
+            }
+        }
+        
+        console.log('✅ 双重验证通过，开始加载答题功能');
+        cleanupExistingElements();
+        
+        if (!document.getElementById('exam-helper-styles')) {
+            GM_addStyle(`
+                #exam-helper-styles {
+                    display: none;
+                }
+                .exam-helper-btn {
+                    position: fixed;
+                    z-index: 9998;
+                    padding: 8px 12px;
+                    border-radius: 20px;
+                    font-size: 12px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                    transition: all 0.3s ease;
+                    border: none;
+                    outline: none;
+                    display: flex;
+                    align-items: center;
+                    gap: 5px;
+                    opacity: 0.7;
+                    backdrop-filter: blur(5px);
+                    pointer-events: auto;
+                }
+                .exam-helper-btn:hover {
+                    opacity: 1;
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                }
+                .exam-helper-btn-start {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 200px;
+                }
+                .exam-helper-btn-stop {
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 150px;
+                }
+                .exam-helper-btn-check {
+                    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 100px;
+                }
+                .exam-helper-btn-auto-submit {
+                    background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 50px;
+                }
+                .exam-helper-btn-auto-submit.active {
+                    background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+                }
+                .exam-helper-btn-info {
+                    background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 300px;
+                    opacity: 0.5;
+                    font-size: 10px;
+                    padding: 5px 10px;
+                }
+                .exam-helper-btn-info:hover {
+                    opacity: 1;
+                }
+                .exam-helper-btn-rank {
+                    background: linear-gradient(135deg, #9C27B0 0%, #E91E63 100%);
+                    color: white;
+                    right: 20px;
+                    bottom: 250px;
+                }
+                .exam-helper-status {
+                    position: fixed;
+                    right: 20px;
+                    top: 80px;
+                    background: rgba(0,0,0,0.7);
+                    color: white;
+                    padding: 6px 10px;
+                    border-radius: 6px;
+                    font-size: 10px;
+                    z-index: 9997;
+                    display: none;
+                    max-width: 200px;
+                    backdrop-filter: blur(5px);
+                    font-family: 'Microsoft YaHei', sans-serif;
+                    border-left: 2px solid #00b09b;
+                    opacity: 0;
+                    transition: opacity 0.3s ease;
+                }
+                .exam-helper-status.show {
+                    display: block;
+                    opacity: 1;
+                    animation: fadeInStatus 0.3s ease-out;
+                }
+                @keyframes fadeInStatus {
+                    from {
+                        opacity: 0;
+                        transform: translateY(-10px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateY(0);
+                    }
+                }
+                .exam-helper-auth-badge {
+                    position: fixed;
+                    top: 10px;
+                    right: 10px;
+                    background: rgba(0, 176, 155, 0.8);
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 15px;
+                    font-size: 10px;
+                    z-index: 9996;
+                    font-family: 'Microsoft YaHei', sans-serif;
+                    backdrop-filter: blur(5px);
+                    opacity: 0.7;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                    pointer-events: auto;
+                }
+                .exam-helper-auth-badge:hover {
+                    opacity: 1;
+                }
+                .exam-helper-video-mode .exam-helper-btn {
+                    opacity: 0.3;
+                }
+                .exam-helper-video-mode .exam-helper-btn:hover {
+                    opacity: 0.8;
+                }
+                .exam-helper-video-mode .exam-helper-auth-badge {
+                    background: rgba(102, 126, 234, 0.8);
+                }
+            `);
+            const styleTag = document.createElement('style');
+            styleTag.id = 'exam-helper-styles';
+            document.head.appendChild(styleTag);
+        }
+        
+        function cleanupExistingElements() {
+            const elementsToRemove = [
+                'exam-helper-auth-badge',
+                'exam-helper-start',
+                'exam-helper-stop', 
+                'exam-helper-check',
+                'exam-helper-info',
+                'exam-helper-status',
+                'exam-helper-auto-submit',
+                'exam-helper-rank'
+            ];
+            elementsToRemove.forEach(id => {
+                const element = document.getElementById(id);
+                if (element && element.parentNode) {
+                    element.parentNode.removeChild(element);
+                }
+            });
+            window._examHelperElements = {
+                badge: null,
+                startBtn: null,
+                stopBtn: null,
+                checkBtn: null,
+                infoBtn: null,
+                statusDiv: null,
+                rankBtn: null
+            };
+        }
+        
+        function createAuthBadge() {
+            if (document.getElementById('exam-helper-auth-badge')) {
+                return;
+            }
+            const statusInfo = IDCardAuth.getStatusInfo();
+            const maskedID = IDCardAuth.maskIDCard(statusInfo.idCard);
+            const badge = document.createElement('div');
+            badge.id = 'exam-helper-auth-badge';
+            badge.className = 'exam-helper-auth-badge';
+            if (statusInfo.isVideoPage) {
+                badge.classList.add('video-mode');
+            }
+            badge.innerHTML = `
+                <span style="font-size: 12px;">${statusInfo.isVideoPage ? '🔥' : '✓'}</span>
+                <span>${maskedID.substring(12)}</span>
+            `;
+            badge.title = statusInfo.isVideoPage ? '起飞模式' : '双重验证通过（30题适配）';
+            document.body.appendChild(badge);
+            window._examHelperElements.badge = badge;
+            badge.addEventListener('click', function(e) {
+                e.stopPropagation();
+                showLicenseInfo();
+            });
+        }
+        
+        function showLicenseInfo() {
+            const existingPopup = document.getElementById('license-info-popup');
+            if (existingPopup && existingPopup.parentNode) {
+                existingPopup.parentNode.removeChild(existingPopup);
+            }
+            const statusInfo = IDCardAuth.getStatusInfo();
+            const pageIDCard = IDCardAuth.getPageIDCard();
+            const infoDiv = document.createElement('div');
+            infoDiv.id = 'license-info-popup';
+            infoDiv.className = 'exam-helper-status show';
+            infoDiv.style.top = '40px';
+            infoDiv.style.right = '10px';
+            infoDiv.style.maxWidth = '250px';
+            let infoContent = `
+                <div style="margin-bottom: 5px; font-weight: bold; font-size: 11px;">双重验证信息（30题适配）</div>
+                <div style="margin-bottom: 3px; font-size: 9px;">
+                    <span style="opacity: 0.7;">激活:</span> ${IDCardAuth.maskIDCard(statusInfo.idCard)}
+                </div>
+            `;
+            if (statusInfo.isVideoPage) {
+                infoContent += `
+                    <div style="margin-bottom: 3px; font-size: 9px; color: #667eea;">
+                        <span style="opacity: 0.7;">模式:</span> 🔥 起飞模式
+                    </div>
+                `;
+            } else {
+                infoContent += `
+                    <div style="margin-bottom: 3px; font-size: 9px;">
+                        <span style="opacity: 0.7;">页面:</span> ${pageIDCard ? IDCardAuth.maskIDCard(pageIDCard) : '未检测'}
+                    </div>
+                `;
+            }
+            infoContent += `
+                <div style="margin-bottom: 3px; font-size: 9px;">
+                    <span style="opacity: 0.7;">到期:</span> ${statusInfo.expireDate}
+                </div>
+                <div style="margin-bottom: 3px; font-size: 9px; color: #4facfe;">
+                    <span style="opacity: 0.7;">适配:</span> 30题模式
+                </div>
+                <div style="margin-top: 5px; font-size: 8px; opacity: 0.5; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 5px;">
+                    点击任意处关闭
+                </div>
+            `;
+            infoDiv.innerHTML = infoContent;
+            document.body.appendChild(infoDiv);
+            setTimeout(() => {
+                const closeInfo = function(e) {
+                    const popup = document.getElementById('license-info-popup');
+                    const badge = document.getElementById('exam-helper-auth-badge');
+                    if (popup && popup.parentNode && 
+                        !popup.contains(e.target) && 
+                        (!badge || !badge.contains(e.target))) {
+                        popup.style.opacity = '0';
+                        setTimeout(() => {
+                            if (popup.parentNode) {
+                                popup.parentNode.removeChild(popup);
+                            }
+                        }, 300);
+                        document.removeEventListener('click', closeInfo);
+                    }
+                };
+                document.addEventListener('click', closeInfo);
+            }, 100);
+        }
+        
+        function createControlPanel() {
+            const elements = [
+                'exam-helper-status',
+                'exam-helper-info',
+                'exam-helper-check', 
+                'exam-helper-start',
+                'exam-helper-stop',
+                'exam-helper-auto-submit',
+                'exam-helper-rank'
+            ];
+            
+            if (elements.some(id => document.getElementById(id))) {
+                console.log('⚠️ 控制面板元素已存在，跳过创建');
+                return;
+            }
+            
+            // 状态显示
+            const statusDiv = document.createElement('div');
+            statusDiv.id = 'exam-helper-status';
+            statusDiv.className = 'exam-helper-status';
+            document.body.appendChild(statusDiv);
+            window._examHelperElements.statusDiv = statusDiv;
+            
+            // 信息按钮
+            const infoBtn = document.createElement('button');
+            infoBtn.id = 'exam-helper-info';
+            infoBtn.className = 'exam-helper-btn exam-helper-btn-info';
+            infoBtn.innerHTML = 'ℹ️';
+            infoBtn.title = '显示授权信息';
+            document.body.appendChild(infoBtn);
+            window._examHelperElements.infoBtn = infoBtn;
+            
+            // 排名查询按钮
+            const rankBtn = document.createElement('button');
+            rankBtn.id = 'exam-helper-rank';
+            rankBtn.className = 'exam-helper-btn exam-helper-btn-rank';
+            rankBtn.innerHTML = '📊排名查询';
+            rankBtn.title = '查询我的月度排名 (Ctrl+Alt+R)';
+            document.body.appendChild(rankBtn);
+            window._examHelperElements.rankBtn = rankBtn;
+            
+            // 开始答题按钮
+            const startBtn = document.createElement('button');
+            startBtn.id = 'exam-helper-start';
+            startBtn.className = 'exam-helper-btn exam-helper-btn-start';
+            startBtn.innerHTML = '▶开始答题(30题)';
+            startBtn.title = '开始自动答题 (Ctrl+Alt+S)';
+            document.body.appendChild(startBtn);
+            window._examHelperElements.startBtn = startBtn;
+            
+            // 停止答题按钮
+            const stopBtn = document.createElement('button');
+            stopBtn.id = 'exam-helper-stop';
+            stopBtn.className = 'exam-helper-btn exam-helper-btn-stop';
+            stopBtn.innerHTML = '停止答题';
+            stopBtn.title = '停止自动答题 (Ctrl+Alt+P)';
+            stopBtn.style.display = 'none';
+            document.body.appendChild(stopBtn);
+            window._examHelperElements.stopBtn = stopBtn;
+            
+            // 检查按钮
+            const checkBtn = document.createElement('button');
+            checkBtn.id = 'exam-helper-check';
+            checkBtn.className = 'exam-helper-btn exam-helper-btn-check';
+            checkBtn.innerHTML = '✓检查进度';
+            checkBtn.title = '检查已答题目 (Ctrl+Alt+C)';
+            document.body.appendChild(checkBtn);
+            window._examHelperElements.checkBtn = checkBtn;
+            
+            // 自动交卷按钮
+            const autoSubmitBtn = document.createElement('button');
+            autoSubmitBtn.id = 'exam-helper-auto-submit';
+            autoSubmitBtn.className = 'exam-helper-btn exam-helper-btn-auto-submit';
+            autoSubmitBtn.innerHTML = '⚡自动交卷(关)';
+            autoSubmitBtn.title = '开启/关闭答完自动交卷 (Ctrl+Alt+A)';
+            document.body.appendChild(autoSubmitBtn);
+            
+            // 绑定自动交卷开关事件
+            autoSubmitBtn.addEventListener('click', function() {
+                window._autoSubmitEnabled = !window._autoSubmitEnabled;
+                if (window._autoSubmitEnabled) {
+                    this.innerHTML = '⚡自动交卷(开)';
+                    this.classList.add('active');
+                    showStatus('✅ 自动交卷已开启', 2000);
+                } else {
+                    this.innerHTML = '⚡自动交卷(关)';
+                    this.classList.remove('active');
+                    showStatus('⏹️ 自动交卷已关闭', 2000);
+                }
+            });
+        }
+        
+        function showStatus(message, duration = 2000) {
+            const statusDiv = document.getElementById('exam-helper-status');
+            if (!statusDiv) return;
+            statusDiv.textContent = message;
+            statusDiv.className = 'exam-helper-status show';
+            if (duration > 0) {
+                setTimeout(() => {
+                    statusDiv.className = 'exam-helper-status';
+                }, duration);
+            }
+        }
+        
+        // 获取当前显示的题目编号
+        function getCurrentQuestionNumber() {
+            if (window.onlineCur) {
+                return parseInt(window.onlineCur);
+            }
+            const visibleQuestion = document.querySelector('.single-box[style*="display: block"]');
+            if (visibleQuestion) {
+                const link = visibleQuestion.querySelector('a[name]');
+                if (link) {
+                    return parseInt(link.name);
+                }
+            }
+            const currentLink = document.querySelector('.single-main a');
+            if (currentLink && currentLink.name) {
+                return parseInt(currentLink.name);
+            }
+            return 1;
+        }
+        
+        // 跳转到指定题目
+        function goToQuestion(qNum) {
+            if (typeof window.move2 === 'function') {
+                window.move2(qNum);
+                return qNum;
+            }
+            if (typeof window.BJ === 'function') {
+                window.BJ(qNum.toString());
+            }
+            const panelBtn = document.getElementById(`${qNum}aa`);
+            if (panelBtn) {
+                document.querySelectorAll('.title_num a').forEach(btn => {
+                    btn.className = 'btn btn-default';
+                });
+                panelBtn.className = 'btn btn-primary';
+            }
+            return qNum;
+        }
+        
+        // 获取标准答案
+        function getCorrectAnswer(questionId) {
+            const answerInput = document.getElementById(`${questionId}bzda`);
+            return answerInput ? answerInput.value.trim() : null;
+        }
+        
+        // 答题函数
+        function answerQuestion(questionId) {
+            const correctAnswer = getCorrectAnswer(questionId);
+            if (!correctAnswer) {
+                console.warn(`第 ${questionId} 题没有找到答案`);
+                return false;
+            }
+            let answered = false;
+            if (correctAnswer.length === 1 && ['A','B','C','D'].includes(correctAnswer)) {
+                const optionIndex = correctAnswer.charCodeAt(0) - 65 + 1;
+                const radioId = `${questionId}|${optionIndex}`;
+                const radio = document.getElementById(radioId);
+                if (radio) {
+                    radio.click();
+                    answered = true;
+                }
+            } else if (correctAnswer.length > 1 && correctAnswer.split('').every(c => ['A','B','C','D','E','F','G','H'].includes(c))) {
+                for (let letter of correctAnswer) {
+                    const optionIndex = letter.charCodeAt(0) - 65 + 1;
+                    const checkboxId = `${questionId}|${optionIndex}`;
+                    const checkbox = document.getElementById(checkboxId);
+                    if (checkbox) {
+                        checkbox.click();
+                        answered = true;
+                    }
+                }
+            } else if (correctAnswer === '对' || correctAnswer === '错' || correctAnswer === 'Y' || correctAnswer === 'N') {
+                let optionIndex = 1;
+                if (correctAnswer === '错' || correctAnswer === 'N') {
+                    optionIndex = 2;
+                }
+                const radioId = `${questionId}|${optionIndex}`;
+                const radio = document.getElementById(radioId);
+                if (radio) {
+                    radio.click();
+                    answered = true;
+                }
+            }
+            if (answered) {
+                const panelBtn = document.getElementById(`${questionId}aa`);
+                if (panelBtn) {
+                    panelBtn.className = 'btn btn-success';
+                }
+            }
+            return answered;
+        }
+        
+        // 翻到下一题
+        function goToNextQuestion() {
+            if (typeof window.questionsAdd === 'function') {
+                window.questionsAdd();
+                return true;
+            }
+            if (typeof window.ToNext === 'function') {
+                window.ToNext();
+                return true;
+            }
+            const nextBtn = document.querySelector('a[onclick*="questionsAdd"]');
+            if (nextBtn) {
+                nextBtn.click();
+                return true;
+            }
+            return false;
+        }
+        
+        // 自动交卷+结束考试完整流程
+        function autoSubmitAndFinishExam() {
+            console.log('📤 执行自动交卷+结束考试流程...');
+            showStatus('📤 正在交卷，请稍候...', 3000);
+            
+            try {
+                // 第一步：触发交卷
+                if (typeof window.JiaoJuan === 'function') {
+                    console.log('✅ 调用页面交卷函数 JiaoJuan()');
+                    window.JiaoJuan();
+                } else {
+                    const submitBtn = document.querySelector('.overtest, #Img2, [onclick*="JiaoJuan"]');
+                    if (submitBtn) {
+                        console.log('✅ 点击交卷按钮');
+                        submitBtn.click();
+                    } else if (window.vData?.ksmxid && window.vData?.PersonId) {
+                        console.log('✅ 跳转交卷接口');
+                        window.location.href = `/Bus/ExamManger/OnlineTest/JiaoJuan?ksmxid=${window.vData.ksmxid}&personId=${window.vData.PersonId}`;
+                        return;
+                    }
+                }
+
+                // 第二步：监听交卷确认弹窗，自动确认
+                setTimeout(() => {
+                    const confirmBtn = document.querySelector('[onclick*="JiaoJuan"][data-dismiss="modal"]');
+                    if (confirmBtn) {
+                        console.log('✅ 确认交卷');
+                        confirmBtn.click();
+                        
+                        // 第三步：交卷成功后，自动点击"结束考试"
+                        setTimeout(() => {
+                            if (typeof window.SleepClose === 'function') {
+                                console.log('✅ 调用结束考试函数 SleepClose()');
+                                window.SleepClose();
+                                showStatus('🎉 考试已结束！', 5000);
+                                return;
+                            }
+                            
+                            const finishBtn = document.getElementById('btnClose');
+                            if (finishBtn) {
+                                console.log('✅ 点击结束考试按钮');
+                                finishBtn.click();
+                                showStatus('🎉 考试已结束！', 5000);
+                                return;
+                            }
+                            
+                            const otherFinishBtn = document.querySelector('.btn-danger[onclick*="SleepClose"], [data-dismiss="modal"].btn-danger');
+                            if (otherFinishBtn) {
+                                console.log('✅ 点击其他结束考试按钮');
+                                otherFinishBtn.click();
+                                showStatus('🎉 考试已结束！', 5000);
+                                return;
+                            }
+                            
+                            showStatus('✅ 交卷成功，请手动点击"结束考试"', 5000);
+                        }, 1500);
+                    } else {
+                        setTimeout(() => {
+                            if (typeof window.SleepClose === 'function') {
+                                window.SleepClose();
+                                showStatus('🎉 交卷并结束考试成功！', 5000);
+                            } else {
+                                showStatus('✅ 交卷成功，请手动结束考试', 5000);
+                            }
+                        }, 1000);
+                    }
+                }, 1000);
+            } catch (e) {
+                console.error('❌ 交卷流程出错:', e);
+                showStatus('❌ 交卷失败，请手动操作', 5000);
+            }
+        }
+        
+        // 自动答题主函数
+        function startAutoAnswer() {
+            const authStatus = IDCardAuth.checkAuthorization();
+            if (authStatus.status !== "authorized") {
+                showStatus('❌ 验证失效，请重新登录');
+                return;
+            }
+            let currentQuestion = getCurrentQuestionNumber();
+            const totalQuestions = 30;
+            const interval = 100;
+            const stopBtn = document.getElementById('exam-helper-stop');
+            const startBtn = document.getElementById('exam-helper-start');
+            if (stopBtn) stopBtn.style.display = 'block';
+            if (startBtn) startBtn.style.display = 'none';
+            showStatus('🚀 开始答题(30题)...');
+            
+            if (window._examHelperTimer) {
+                clearInterval(window._examHelperTimer);
+            }
+            
+            window._examHelperTimer = setInterval(() => {
+                if (currentQuestion > totalQuestions) {
+                    clearInterval(window._examHelperTimer);
+                    window._examHelperTimer = null;
+                    showStatus('🎉 30题已全部完成！', 3000);
+                    // 开启自动交卷则执行完整流程
+                    if (window._autoSubmitEnabled) {
+                        setTimeout(autoSubmitAndFinishExam, 1500);
+                    }
+                    if (stopBtn) stopBtn.style.display = 'none';
+                    if (startBtn) startBtn.style.display = 'block';
+                    return;
+                }
+                
+                goToQuestion(currentQuestion);
+                setTimeout(() => {
+                    const answered = answerQuestion(currentQuestion);
+                    if (answered) {
+                        showStatus(`✅ 第 ${currentQuestion}/30 题`, 800);
+                    } else {
+                        showStatus(`⏭️ 第 ${currentQuestion}/30 题`, 800);
+                    }
+                    setTimeout(() => {
+                        goToNextQuestion();
+                        currentQuestion++;
+                    }, 100);
+                }, 100);
+            }, interval);
+        }
+        
+        // 停止答题
+        function stopAutoAnswer() {
+            if (window._examHelperTimer) {
+                clearInterval(window._examHelperTimer);
+                window._examHelperTimer = null;
+            }
+            showStatus('⏹️ 已停止', 2000);
+            const stopBtn = document.getElementById('exam-helper-stop');
+            const startBtn = document.getElementById('exam-helper-start');
+            if (stopBtn) stopBtn.style.display = 'none';
+            if (startBtn) startBtn.style.display = 'block';
+        }
+        
+        // 检查已答题目
+        function checkAnsweredQuestions() {
+            let answeredCount = 0;
+            showStatus('🔍 检查中(30题)...', 2000);
+            for (let i = 1; i <= 30; i++) {
+                const panelBtn = document.getElementById(`${i}aa`);
+                if (panelBtn && panelBtn.className.includes('btn-success')) {
+                    answeredCount++;
+                }
+            }
+            showStatus(`📊 ${answeredCount}/30 题已答`, 3000);
+        }
+        
+        // 主程序初始化
+        function init() {
+            console.log('🎯 初始化答题助手主程序（30题适配）');
+            const isVideoPage = IDCardAuth.isVideoPage();
+            if (isVideoPage) {
+                console.log('🔥 检测到视频题页面，启用特殊模式');
+                document.body.classList.add('exam-helper-video-mode');
+            }
+            
+            createAuthBadge();
+            createControlPanel();
+            
+            // 获取按钮元素
+            const startBtn = document.getElementById('exam-helper-start');
+            const stopBtn = document.getElementById('exam-helper-stop');
+            const checkBtn = document.getElementById('exam-helper-check');
+            const infoBtn = document.getElementById('exam-helper-info');
+            const rankBtn = document.getElementById('exam-helper-rank');
+            
+            // 绑定事件
+            if (startBtn && !startBtn._hasListener) {
+                startBtn.addEventListener('click', function() {
+                    showStatus('🚀 开始答题(30题)...', 1000);
+                    setTimeout(startAutoAnswer, 500);
+                });
+                startBtn._hasListener = true;
+            }
+            
+            if (stopBtn && !stopBtn._hasListener) {
+                stopBtn.addEventListener('click', stopAutoAnswer);
+                stopBtn._hasListener = true;
+            }
+            
+            if (checkBtn && !checkBtn._hasListener) {
+                checkBtn.addEventListener('click', checkAnsweredQuestions);
+                checkBtn._hasListener = true;
+            }
+            
+            if (infoBtn && !infoBtn._hasListener) {
+                infoBtn.addEventListener('click', showLicenseInfo);
+                infoBtn._hasListener = true;
+            }
+            
+            // 绑定排名查询按钮
+            if (rankBtn && !rankBtn._hasListener) {
+                rankBtn.addEventListener('click', function() {
+                    showStatus('📊 正在查询排名...', 1000);
+                    setTimeout(() => {
+                        RankQuery.queryMyRanking();
+                    }, 500);
+                });
+                rankBtn._hasListener = true;
+            }
+            
+            showStatus('✅ 助手已就绪(30题+排名查询)', 2000);
+            
+            // 键盘快捷键
+            if (!document._examHelperKeyListener) {
+                document.addEventListener('keydown', function(e) {
+                    if (e.ctrlKey && e.altKey && e.key === 's') {
+                        startAutoAnswer();
+                    }
+                    if (e.ctrlKey && e.altKey && e.key === 'p') {
+                        stopAutoAnswer();
+                    }
+                    if (e.ctrlKey && e.altKey && e.key === 'c') {
+                        checkAnsweredQuestions();
+                    }
+                    if (e.ctrlKey && e.altKey && e.key === 'a') {
+                        document.getElementById('exam-helper-auto-submit').click();
+                    }
+                    // 新增排名查询快捷键
+                    if (e.ctrlKey && e.altKey && e.key === 'r') {
+                        document.getElementById('exam-helper-rank').click();
+                    }
+                });
+                document._examHelperKeyListener = true;
+            }
+            
+            console.log('🎉 答题助手已完全加载（30题适配+排名查询）');
+        }
+        
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                setTimeout(init, 1500);
+            });
+        } else {
+            setTimeout(init, 1500);
+        }
+    }
+    
+    // ==================== 其他辅助函数 ====================
+    function showPageVerificationRequired(idCard) {
+        const verifyDiv = document.createElement('div');
+        verifyDiv.id = 'page-verification';
+        verifyDiv.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Microsoft YaHei', sans-serif;
+        `;
+        verifyDiv.innerHTML = `
+            <div style="
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 20px;
+                padding: 40px;
+                width: 90%;
+                max-width: 500px;
+                text-align: center;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            ">
+                <div style="margin-bottom: 30px;">
+                    <div style="font-size: 60px; margin-bottom: 10px;">🔄</div>
+                    <div style="font-size: 24px; font-weight: bold; color: #333; margin-bottom: 10px;">需要重新验证身份</div>
+                    <div style="font-size: 14px; color: #666; margin-bottom: 25px;">
+                        系统检测到页面身份信息可能已变更<br>
+                        需要重新验证您的身份信息
+                    </div>
+                </div>
+                <div style="margin-bottom: 25px; padding: 20px; background: #f8f9fa; border-radius: 12px;">
+                    <div style="font-size: 14px; color: #333; margin-bottom: 10px;">已激活的身份证:</div>
+                    <div style="font-family: monospace; font-size: 18px; font-weight: bold; color: #667eea;">
+                        ${IDCardAuth.maskIDCard(idCard)}
+                    </div>
+                </div>
+                <div style="margin-bottom: 30px;">
+                    <button id="verify-page-btn" style="
+                        background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
+                        color: white;
+                        border: none;
+                        padding: 16px 40px;
+                        border-radius: 25px;
+                        font-size: 16px;
+                        font-weight: bold;
+                        cursor: pointer;
+                        width: 100%;
+                        margin-bottom: 15px;
+                    ">重新验证页面身份</button>
+                    <button id="logout-btn" style="
+                        background: #f8f9fa;
+                        color: #666;
+                        border: 1px solid #ddd;
+                        padding: 12px 30px;
+                        border-radius: 25px;
+                        font-size: 14px;
+                        cursor: pointer;
+                        width: 100%;
+                    ">退出当前账户</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(verifyDiv);
+        document.getElementById('verify-page-btn').addEventListener('click', function() {
+            this.innerHTML = '验证中...';
+            this.disabled = true;
+            setTimeout(() => {
+                const result = IDCardAuth.verifyPageIDCard();
+                if (result.success) {
+                    this.innerHTML = '✅ 验证成功';
+                    this.style.background = 'linear-gradient(135deg, #00b09b 0%, #96c93d 100%)';
+                    setTimeout(() => {
+                        verifyDiv.remove();
+                        location.reload();
+                    }, 1000);
+                } else {
+                    this.innerHTML = '重新验证页面身份';
+                    this.disabled = false;
+                }
+            }, 500);
+        });
+        document.getElementById('logout-btn').addEventListener('click', function() {
+            GM_setValue(IDCardAuth.storageKeys.licenseCode, null);
+            GM_setValue(IDCardAuth.storageKeys.licensePlainText, null);
+            GM_setValue(IDCardAuth.storageKeys.pageIDCardVerified, false);
+            verifyDiv.remove();
+            setTimeout(() => {
+                location.reload();
+            }, 300);
+        });
+    }
+    
+    function showLockedMessage(hours) {
+        const lockedDiv = document.createElement('div');
+        lockedDiv.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Microsoft YaHei', sans-serif;
+            color: white;
+        `;
+        lockedDiv.innerHTML = `
+            <div style="text-align: center; padding: 30px;">
+                <div style="font-size: 60px; margin-bottom: 20px;">🔒</div>
+                <div style="font-size: 24px; font-weight: bold; margin-bottom: 10px;">激活功能已锁定</div>
+                <div style="font-size: 16px; margin-bottom: 20px; opacity: 0.9;">
+                    由于多次验证失败，系统已暂时锁定
+                </div>
+                <div style="
+                    background: rgba(255, 255, 255, 0.2);
+                    border-radius: 10px;
+                    padding: 15px;
+                    margin-bottom: 25px;
+                    max-width: 300px;
+                ">
+                    <div style="font-size: 14px; margin-bottom: 5px;">剩余锁定时间:</div>
+                    <div style="font-size: 28px; font-weight: bold;">${hours} 小时</div>
+                </div>
+                <button id="try-again-btn" style="
+                    background: rgba(255, 255, 255, 0.2);
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    color: white;
+                    padding: 10px 20px;
+                    border-radius: 20px;
+                    cursor: pointer;
+                    font-size: 14px;
+                ">返回重新验证</button>
+            </div>
+        `;
+        document.body.appendChild(lockedDiv);
+        document.getElementById('try-again-btn').addEventListener('click', function() {
+            location.reload();
+        });
+    }
+    
+    function showExpiredMessage() {
+        const div = document.createElement('div');
+        div.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Microsoft YaHei', sans-serif;
+            color: white;
+        `;
+        div.innerHTML = `
+            <div style="text-align: center; padding: 40px;">
+                <div style="font-size: 60px; margin-bottom: 20px;">⏰</div>
+                <div style="font-size: 28px; font-weight: bold; margin-bottom: 15px;">授权已过期</div>
+                <div style="font-size: 16px; margin-bottom: 30px; opacity: 0.9;">
+                    授权已于 ${IDCardAuth.config.expireDate} 到期
+                </div>
+            </div>
+        `;
+        document.body.appendChild(div);
+    }
+    
     // ==================== 授权界面 ====================
     function showIDCardAuth() {
         const lockStatus = IDCardAuth.isLocked();
@@ -389,6 +1746,7 @@
             showLockedMessage(lockStatus.remainingHours);
             return;
         }
+        
         const authDiv = document.createElement('div');
         authDiv.id = 'license-auth';
         authDiv.style.cssText = `
@@ -404,6 +1762,7 @@
             align-items: center;
             font-family: 'Microsoft YaHei', sans-serif;
         `;
+        
         const statusInfo = IDCardAuth.getStatusInfo();
         authDiv.innerHTML = `
             <div style="
@@ -516,27 +1875,33 @@
                         <span>${IDCardAuth.config.expireDate}</span>
                     </div>
                     <div style="font-size: 11px; color: #999; margin-top: 10px; text-align: center;">
-                        © 2026 晚风叙信 | 全员答题(模拟考试、手机考试) v3.6（适配30题+GitHub更新）
+                        © 2026 晚风叙信 | 全员答题(模拟考试、手机考试) v3.7（适配30题+排名查询）
                     </div>
                 </div>
             </div>
         `;
+        
         document.body.appendChild(authDiv);
+        
         setTimeout(() => {
             document.getElementById('idcard-input').value = "";
             document.getElementById('idcard-input').focus();
         }, 300);
+        
         const activateBtn = document.getElementById('activate-btn');
         activateBtn.addEventListener('click', function() {
             const idcardInput = document.getElementById('idcard-input');
             const idCard = idcardInput.value.trim();
             const errorDiv = document.getElementById('license-error');
+            
             if (!idCard) {
                 showError(errorDiv, "请输入身份证号");
                 return;
             }
+            
             this.innerHTML = '正在双重验证...';
             this.disabled = true;
+            
             setTimeout(() => {
                 const result = IDCardAuth.activateIDCard(idCard);
                 if (result.success) {
@@ -567,6 +1932,7 @@
                         showError(errorDiv, result.message);
                         idcardInput.style.borderColor = '#ff4757';
                     }
+                    
                     const lockStatus = IDCardAuth.isLocked();
                     if (lockStatus.locked) {
                         setTimeout(() => {
@@ -577,21 +1943,25 @@
                 }
             }, 800);
         });
+        
         document.getElementById('detect-page-id').addEventListener('click', function(e) {
             e.preventDefault();
             detectPageIDCard();
         });
+        
         document.getElementById('idcard-input').addEventListener('input', function(e) {
             const value = e.target.value.replace(/[^0-9Xx]/g, '');
             e.target.value = value.toUpperCase();
             e.target.style.borderColor = '#e1e5e9';
             document.getElementById('license-error').style.display = 'none';
         });
+        
         document.getElementById('idcard-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 document.getElementById('activate-btn').click();
             }
         });
+        
         function detectPageIDCard() {
             const pageIDCard = IDCardAuth.getPageIDCard();
             const pageIdInfo = document.getElementById('page-id-info');
@@ -608,905 +1978,15 @@
                     "❌ 未检测到页面身份证号，请确保您已登录并进入考试页面");
             }
         }
-    }
-    function showError(element, message, type = "error") {
-        element.textContent = message;
-        element.style.display = 'block';
-        if (type === "success") {
-            element.style.color = '#00b09b';
-        } else {
-            element.style.color = '#ff4757';
-        }
-    }
-    // ==================== 主功能（适配30题） ====================
-    function initializeMainProgram() {
-        console.log('🎯 初始化答题功能（适配30题+GitHub更新）...');
-        const authStatus = IDCardAuth.checkAuthorization();
-        if (authStatus.status !== "authorized") {
-            console.error('❌ 授权状态异常，无法初始化答题功能');
-            return;
-        }
-        if (!IDCardAuth.isVideoPage()) {
-            const pageValidation = IDCardAuth.validatePageIDCard(authStatus.idCard);
-            if (!pageValidation.valid) {
-                console.error('❌ 页面身份证号验证失败，无法使用答题功能');
-                showPageVerificationRequired(authStatus.idCard);
-                return;
-            }
-        }
-        console.log('✅ 双重验证通过，开始加载答题功能');
-        cleanupExistingElements();
-        if (!document.getElementById('exam-helper-styles')) {
-            GM_addStyle(`
-                #exam-helper-styles {
-                    display: none;
-                }
-                .exam-helper-btn {
-                    position: fixed;
-                    z-index: 9998;
-                    padding: 8px 12px;
-                    border-radius: 20px;
-                    font-size: 12px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-                    transition: all 0.3s ease;
-                    border: none;
-                    outline: none;
-                    display: flex;
-                    align-items: center;
-                    gap: 5px;
-                    opacity: 0.7;
-                    backdrop-filter: blur(5px);
-                    pointer-events: auto;
-                }
-                .exam-helper-btn:hover {
-                    opacity: 1;
-                    transform: translateY(-1px);
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-                }
-                .exam-helper-btn-start {
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    right: 20px;
-                    bottom: 200px;
-                }
-                .exam-helper-btn-stop {
-                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-                    color: white;
-                    right: 20px;
-                    bottom: 150px;
-                }
-                .exam-helper-btn-check {
-                    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-                    color: white;
-                    right: 20px;
-                    bottom: 100px;
-                }
-                .exam-helper-btn-auto-submit { /* 自动交卷按钮样式 */
-                    background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
-                    color: white;
-                    right: 20px;
-                    bottom: 50px;
-                }
-                .exam-helper-btn-auto-submit.active { /* 开启状态样式 */
-                    background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
-                }
-                .exam-helper-btn-info {
-                    background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
-                    color: white;
-                    right: 20px;
-                    bottom: 250px;
-                    opacity: 0.5;
-                    font-size: 10px;
-                    padding: 5px 10px;
-                }
-                .exam-helper-btn-info:hover {
-                    opacity: 1;
-                }
-                .exam-helper-status {
-                    position: fixed;
-                    right: 20px;
-                    top: 80px;
-                    background: rgba(0,0,0,0.7);
-                    color: white;
-                    padding: 6px 10px;
-                    border-radius: 6px;
-                    font-size: 10px;
-                    z-index: 9997;
-                    display: none;
-                    max-width: 200px;
-                    backdrop-filter: blur(5px);
-                    font-family: 'Microsoft YaHei', sans-serif;
-                    border-left: 2px solid #00b09b;
-                    opacity: 0;
-                    transition: opacity 0.3s ease;
-                }
-                .exam-helper-status.show {
-                    display: block;
-                    opacity: 1;
-                    animation: fadeInStatus 0.3s ease-out;
-                }
-                @keyframes fadeInStatus {
-                    from {
-                        opacity: 0;
-                        transform: translateY(-10px);
-                    }
-                    to {
-                        opacity: 1;
-                        transform: translateY(0);
-                    }
-                }
-                .exam-helper-auth-badge {
-                    position: fixed;
-                    top: 10px;
-                    right: 10px;
-                    background: rgba(0, 176, 155, 0.8);
-                    color: white;
-                    padding: 4px 8px;
-                    border-radius: 15px;
-                    font-size: 10px;
-                    z-index: 9996;
-                    font-family: 'Microsoft YaHei', sans-serif;
-                    backdrop-filter: blur(5px);
-                    opacity: 0.7;
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    gap: 4px;
-                    pointer-events: auto;
-                }
-                .exam-helper-auth-badge:hover {
-                    opacity: 1;
-                }
-                .exam-helper-video-mode .exam-helper-btn {
-                    opacity: 0.3;
-                }
-                .exam-helper-video-mode .exam-helper-btn:hover {
-                    opacity: 0.8;
-                }
-                .exam-helper-video-mode .exam-helper-auth-badge {
-                    background: rgba(102, 126, 234, 0.8);
-                }
-            `);
-            const styleTag = document.createElement('style');
-            styleTag.id = 'exam-helper-styles';
-            document.head.appendChild(styleTag);
-        }
-        function cleanupExistingElements() {
-            const elementsToRemove = [
-                'exam-helper-auth-badge',
-                'exam-helper-start',
-                'exam-helper-stop', 
-                'exam-helper-check',
-                'exam-helper-info',
-                'exam-helper-status',
-                'exam-helper-auto-submit',
-                'exam-helper-update' // 清理更新按钮
-            ];
-            elementsToRemove.forEach(id => {
-                const element = document.getElementById(id);
-                if (element && element.parentNode) {
-                    element.parentNode.removeChild(element);
-                }
-            });
-            window._examHelperElements = {
-                badge: null,
-                startBtn: null,
-                stopBtn: null,
-                checkBtn: null,
-                infoBtn: null,
-                statusDiv: null
-            };
-        }
-        function createAuthBadge() {
-            if (document.getElementById('exam-helper-auth-badge')) {
-                return;
-            }
-            const statusInfo = IDCardAuth.getStatusInfo();
-            const maskedID = IDCardAuth.maskIDCard(statusInfo.idCard);
-            const badge = document.createElement('div');
-            badge.id = 'exam-helper-auth-badge';
-            badge.className = 'exam-helper-auth-badge';
-            if (statusInfo.isVideoPage) {
-                badge.classList.add('video-mode');
-            }
-            badge.innerHTML = `
-                <span style="font-size: 12px;">${statusInfo.isVideoPage ? '🔥' : '✓'}</span>
-                <span>${maskedID.substring(12)}</span>
-            `;
-            badge.title = statusInfo.isVideoPage ? '起飞模式' : '双重验证通过（30题适配+GitHub更新）';
-            document.body.appendChild(badge);
-            window._examHelperElements.badge = badge;
-            badge.addEventListener('click', function(e) {
-                e.stopPropagation();
-                showLicenseInfo();
-            });
-        }
-        function showLicenseInfo() {
-            const existingPopup = document.getElementById('license-info-popup');
-            if (existingPopup && existingPopup.parentNode) {
-                existingPopup.parentNode.removeChild(existingPopup);
-            }
-            const statusInfo = IDCardAuth.getStatusInfo();
-            const pageIDCard = IDCardAuth.getPageIDCard();
-            const infoDiv = document.createElement('div');
-            infoDiv.id = 'license-info-popup';
-            infoDiv.className = 'exam-helper-status show';
-            infoDiv.style.top = '40px';
-            infoDiv.style.right = '10px';
-            infoDiv.style.maxWidth = '250px';
-            let infoContent = `
-                <div style="margin-bottom: 5px; font-weight: bold; font-size: 11px;">双重验证信息（30题适配+GitHub更新）</div>
-                <div style="margin-bottom: 3px; font-size: 9px;">
-                    <span style="opacity: 0.7;">激活:</span> ${IDCardAuth.maskIDCard(statusInfo.idCard)}
-                </div>
-            `;
-            if (statusInfo.isVideoPage) {
-                infoContent += `
-                    <div style="margin-bottom: 3px; font-size: 9px; color: #667eea;">
-                        <span style="opacity: 0.7;">模式:</span> 🔥 起飞模式
-                    </div>
-                `;
+        
+        function showError(element, message, type = "error") {
+            element.textContent = message;
+            element.style.display = 'block';
+            if (type === "success") {
+                element.style.color = '#00b09b';
             } else {
-                infoContent += `
-                    <div style="margin-bottom: 3px; font-size: 9px;">
-                        <span style="opacity: 0.7;">页面:</span> ${pageIDCard ? IDCardAuth.maskIDCard(pageIDCard) : '未检测'}
-                    </div>
-                `;
+                element.style.color = '#ff4757';
             }
-            infoContent += `
-                <div style="margin-bottom: 3px; font-size: 9px;">
-                    <span style="opacity: 0.7;">到期:</span> ${statusInfo.expireDate}
-                </div>
-                <div style="margin-bottom: 3px; font-size: 9px; color: #4facfe;">
-                    <span style="opacity: 0.7;">适配:</span> 30题模式
-                </div>
-                <div style="margin-top: 5px; font-size: 8px; opacity: 0.5; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 5px;">
-                    点击任意处关闭 | 支持GitHub在线更新
-                </div>
-            `;
-            infoDiv.innerHTML = infoContent;
-            document.body.appendChild(infoDiv);
-            setTimeout(() => {
-                const closeInfo = function(e) {
-                    const popup = document.getElementById('license-info-popup');
-                    const badge = document.getElementById('exam-helper-auth-badge');
-                    if (popup && popup.parentNode && 
-                        !popup.contains(e.target) && 
-                        (!badge || !badge.contains(e.target))) {
-                        popup.style.opacity = '0';
-                        setTimeout(() => {
-                            if (popup.parentNode) {
-                                popup.parentNode.removeChild(popup);
-                            }
-                        }, 300);
-                        document.removeEventListener('click', closeInfo);
-                    }
-                };
-                document.addEventListener('click', closeInfo);
-            }, 100);
-        }
-        function createControlPanel() {
-            const elements = [
-                'exam-helper-status',
-                'exam-helper-info',
-                'exam-helper-check', 
-                'exam-helper-start',
-                'exam-helper-stop'
-            ];
-            if (elements.some(id => document.getElementById(id))) {
-                console.log('⚠️ 控制面板元素已存在，跳过创建');
-                return;
-            }
-            const statusDiv = document.createElement('div');
-            statusDiv.id = 'exam-helper-status';
-            statusDiv.className = 'exam-helper-status';
-            document.body.appendChild(statusDiv);
-            window._examHelperElements.statusDiv = statusDiv;
-            const startBtn = document.createElement('button');
-            startBtn.id = 'exam-helper-start';
-            startBtn.className = 'exam-helper-btn exam-helper-btn-start';
-            startBtn.innerHTML = '▶开始答题(30题)';
-            startBtn.title = '开始自动答题 (Ctrl+Alt+S)';
-            document.body.appendChild(startBtn);
-            window._examHelperElements.startBtn = startBtn;
-            const stopBtn = document.createElement('button');
-            stopBtn.id = 'exam-helper-stop';
-            stopBtn.className = 'exam-helper-btn exam-helper-btn-stop';
-            stopBtn.innerHTML = '停止答题';
-            stopBtn.title = '停止自动答题 (Ctrl+Alt+P)';
-            stopBtn.style.display = 'none';
-            document.body.appendChild(stopBtn);
-            window._examHelperElements.stopBtn = stopBtn;
-            
-            // 创建自动交卷按钮
-            const autoSubmitBtn = document.createElement('button');
-            autoSubmitBtn.id = 'exam-helper-auto-submit';
-            autoSubmitBtn.className = 'exam-helper-btn exam-helper-btn-auto-submit';
-            autoSubmitBtn.innerHTML = '⚡自动交卷(关)';
-            autoSubmitBtn.title = '开启/关闭答完自动交卷 (Ctrl+Alt+A)';
-            document.body.appendChild(autoSubmitBtn);
-            // 绑定自动交卷开关事件
-            autoSubmitBtn.addEventListener('click', function() {
-                window._autoSubmitEnabled = !window._autoSubmitEnabled;
-                if (window._autoSubmitEnabled) {
-                    this.innerHTML = '⚡自动交卷(开)';
-                    this.classList.add('active');
-                    showStatus('✅ 自动交卷已开启', 2000);
-                } else {
-                    this.innerHTML = '⚡自动交卷(关)';
-                    this.classList.remove('active');
-                    showStatus('⏹️ 自动交卷已关闭', 2000);
-                }
-            });
-        }
-        function showStatus(message, duration = 2000) {
-            const statusDiv = document.getElementById('exam-helper-status');
-            if (!statusDiv) return;
-            statusDiv.textContent = message;
-            statusDiv.className = 'exam-helper-status show';
-            if (duration > 0) {
-                setTimeout(() => {
-                    statusDiv.className = 'exam-helper-status';
-                }, duration);
-            }
-        }
-        // 获取当前显示的题目编号（适配30题页面结构）
-        function getCurrentQuestionNumber() {
-            if (window.onlineCur) {
-                return parseInt(window.onlineCur);
-            }
-            const visibleQuestion = document.querySelector('.single-box[style*="display: block"]');
-            if (visibleQuestion) {
-                const link = visibleQuestion.querySelector('a[name]');
-                if (link) {
-                    return parseInt(link.name);
-                }
-            }
-            const currentLink = document.querySelector('.single-main a');
-            if (currentLink && currentLink.name) {
-                return parseInt(currentLink.name);
-            }
-            return 1;
-        }
-        // 跳转到指定题目（适配30题页面跳转逻辑）
-        function goToQuestion(qNum) {
-            if (typeof window.move2 === 'function') {
-                window.move2(qNum);
-                return qNum;
-            }
-            if (typeof window.BJ === 'function') {
-                window.BJ(qNum.toString());
-            }
-            const panelBtn = document.getElementById(`${qNum}aa`);
-            if (panelBtn) {
-                document.querySelectorAll('.title_num a').forEach(btn => {
-                    btn.className = 'btn btn-default';
-                });
-                panelBtn.className = 'btn btn-primary';
-            }
-            return qNum;
-        }
-        // 获取标准答案（保持原逻辑，适配30题答案存储结构）
-        function getCorrectAnswer(questionId) {
-            const answerInput = document.getElementById(`${questionId}bzda`);
-            return answerInput ? answerInput.value.trim() : null;
-        }
-        // 答题函数（保持原逻辑，适配30题选项结构）
-        function answerQuestion(questionId) {
-            const correctAnswer = getCorrectAnswer(questionId);
-            if (!correctAnswer) {
-                console.warn(`第 ${questionId} 题没有找到答案`);
-                return false;
-            }
-            let answered = false;
-            if (correctAnswer.length === 1 && ['A','B','C','D'].includes(correctAnswer)) {
-                const optionIndex = correctAnswer.charCodeAt(0) - 65 + 1;
-                const radioId = `${questionId}|${optionIndex}`;
-                const radio = document.getElementById(radioId);
-                if (radio) {
-                    radio.click();
-                    answered = true;
-                }
-            } else if (correctAnswer.length > 1 && correctAnswer.split('').every(c => ['A','B','C','D','E','F','G','H'].includes(c))) {
-                for (let letter of correctAnswer) {
-                    const optionIndex = letter.charCodeAt(0) - 65 + 1;
-                    const checkboxId = `${questionId}|${optionIndex}`;
-                    const checkbox = document.getElementById(checkboxId);
-                    if (checkbox) {
-                        checkbox.click();
-                        answered = true;
-                    }
-                }
-            } else if (correctAnswer === '对' || correctAnswer === '错' || correctAnswer === 'Y' || correctAnswer === 'N') {
-                let optionIndex = 1;
-                if (correctAnswer === '错' || correctAnswer === 'N') {
-                    optionIndex = 2;
-                }
-                const radioId = `${questionId}|${optionIndex}`;
-                const radio = document.getElementById(radioId);
-                if (radio) {
-                    radio.click();
-                    answered = true;
-                }
-            }
-            if (answered) {
-                const panelBtn = document.getElementById(`${questionId}aa`);
-                if (panelBtn) {
-                    panelBtn.className = 'btn btn-success';
-                }
-            }
-            return answered;
-        }
-        // 翻到下一题（适配30题页面下一题函数）
-        function goToNextQuestion() {
-            if (typeof window.questionsAdd === 'function') {
-                window.questionsAdd();
-                return true;
-            }
-            if (typeof window.ToNext === 'function') {
-                window.ToNext();
-                return true;
-            }
-            const nextBtn = document.querySelector('a[onclick*="questionsAdd"]');
-            if (nextBtn) {
-                nextBtn.click();
-                return true;
-            }
-            return false;
-        }
-        // 自动交卷+结束考试 完整流程（核心补充）
-        function autoSubmitAndFinishExam() {
-            console.log('📤 执行自动交卷+结束考试流程...');
-            showStatus('📤 正在交卷，请稍候...', 3000);
-            
-            try {
-                // 第一步：触发交卷（适配网页逻辑）
-                if (typeof window.JiaoJuan === 'function') {
-                    console.log('✅ 调用页面交卷函数 JiaoJuan()');
-                    window.JiaoJuan();
-                } else {
-                    const submitBtn = document.querySelector('.overtest, #Img2, [onclick*="JiaoJuan"]');
-                    if (submitBtn) {
-                        console.log('✅ 点击交卷按钮');
-                        submitBtn.click();
-                    } else if (window.vData?.ksmxid && window.vData?.PersonId) {
-                        console.log('✅ 跳转交卷接口');
-                        window.location.href = `/Bus/ExamManger/OnlineTest/JiaoJuan?ksmxid=${window.vData.ksmxid}&personId=${window.vData.PersonId}`;
-                        return;
-                    }
-                }
-                // 第二步：监听交卷确认弹窗，自动确认
-                setTimeout(() => {
-                    const confirmBtn = document.querySelector('[onclick*="JiaoJuan"][data-dismiss="modal"]');
-                    if (confirmBtn) {
-                        console.log('✅ 确认交卷');
-                        confirmBtn.click();
-                        
-                        // 第三步：交卷成功后，自动点击"结束考试"（适配网页 btnClose 按钮和 SleepClose 函数）
-                        setTimeout(() => {
-                            // 方式1：直接调用结束考试函数
-                            if (typeof window.SleepClose === 'function') {
-                                console.log('✅ 调用结束考试函数 SleepClose()');
-                                window.SleepClose();
-                                showStatus('🎉 考试已结束！', 5000);
-                                return;
-                            }
-                            
-                            // 方式2：点击结束考试按钮（ID为btnClose）
-                            const finishBtn = document.getElementById('btnClose');
-                            if (finishBtn) {
-                                console.log('✅ 点击结束考试按钮');
-                                finishBtn.click();
-                                showStatus('🎉 考试已结束！', 5000);
-                                return;
-                            }
-                            
-                            // 方式3：适配其他可能的结束按钮
-                            const otherFinishBtn = document.querySelector('.btn-danger[onclick*="SleepClose"], [data-dismiss="modal"].btn-danger');
-                            if (otherFinishBtn) {
-                                console.log('✅ 点击其他结束考试按钮');
-                                otherFinishBtn.click();
-                                showStatus('🎉 考试已结束！', 5000);
-                                return;
-                            }
-                            
-                            // 所有方式失败时提示
-                            showStatus('✅ 交卷成功，请手动点击"结束考试"', 5000);
-                        }, 1500); // 交卷确认后延迟1.5秒执行结束考试
-                    } else {
-                        // 无确认弹窗，直接执行结束考试
-                        setTimeout(() => {
-                            if (typeof window.SleepClose === 'function') {
-                                window.SleepClose();
-                                showStatus('🎉 交卷并结束考试成功！', 5000);
-                            } else {
-                                showStatus('✅ 交卷成功，请手动结束考试', 5000);
-                            }
-                        }, 1000);
-                    }
-                }, 1000); // 交卷后延迟1秒检测确认弹窗
-            } catch (e) {
-                console.error('❌ 交卷流程出错:', e);
-                showStatus('❌ 交卷失败，请手动操作', 5000);
-            }
-        }
-        // 自动答题主函数（调用完整交卷流程）
-        function startAutoAnswer() {
-            const authStatus = IDCardAuth.checkAuthorization();
-            if (authStatus.status !== "authorized") {
-                showStatus('❌ 验证失效，请重新登录');
-                return;
-            }
-            let currentQuestion = getCurrentQuestionNumber();
-            const totalQuestions = 30;
-            const interval = 100;  // 修改答题速度🉑
-            const stopBtn = document.getElementById('exam-helper-stop');
-            const startBtn = document.getElementById('exam-helper-start');
-            if (stopBtn) stopBtn.style.display = 'block';
-            if (startBtn) startBtn.style.display = 'none';
-            showStatus('🚀 开始答题(30题)...');
-            if (window._examHelperTimer) {
-                clearInterval(window._examHelperTimer);
-            }
-            window._examHelperTimer = setInterval(() => {
-                if (currentQuestion > totalQuestions) {
-                    clearInterval(window._examHelperTimer);
-                    window._examHelperTimer = null;
-                    showStatus('🎉 30题已全部完成！', 3000);
-                    // 开启自动交卷则执行完整流程
-                    if (window._autoSubmitEnabled) {
-                        setTimeout(autoSubmitAndFinishExam, 1500);
-                    }
-                    if (stopBtn) stopBtn.style.display = 'none';
-                    if (startBtn) startBtn.style.display = 'block';
-                    return;
-                }
-                goToQuestion(currentQuestion);
-                setTimeout(() => {
-                    const answered = answerQuestion(currentQuestion);
-                    if (answered) {
-                        showStatus(`✅ 第 ${currentQuestion}/30 题`, 800);
-                    } else {
-                        showStatus(`⏭️ 第 ${currentQuestion}/30 题`, 800);
-                    }
-                    setTimeout(() => {
-                        goToNextQuestion();
-                        currentQuestion++;
-                    }, 100);
-                }, 100);
-            }, interval);
-        }
-        // 停止答题（保持原逻辑）
-        function stopAutoAnswer() {
-            if (window._examHelperTimer) {
-                clearInterval(window._examHelperTimer);
-                window._examHelperTimer = null;
-            }
-            showStatus('⏹️ 已停止', 2000);
-            const stopBtn = document.getElementById('exam-helper-stop');
-            const startBtn = document.getElementById('exam-helper-start');
-            if (stopBtn) stopBtn.style.display = 'none';
-            if (startBtn) startBtn.style.display = 'block';
-        }
-        // 检查已答题目（适配30题）
-        function checkAnsweredQuestions() {
-            let answeredCount = 0;
-            showStatus('🔍 检查中(30题)...', 2000);
-            for (let i = 1; i <= 30; i++) {
-                const panelBtn = document.getElementById(`${i}aa`);
-                if (panelBtn && panelBtn.className.includes('btn-success')) {
-                    answeredCount++;
-                }
-            }
-            showStatus(`📊 ${answeredCount}/30 题已答`, 3000);
-        }
-        // 重新验证身份（保持原逻辑）
-        function reVerifyIdentity() {
-            showStatus('🔍 验证身份...', 1500);
-            setTimeout(() => {
-                const result = IDCardAuth.verifyPageIDCard();
-                if (result.success) {
-                    showStatus('✅ 验证成功', 2000);
-                } else {
-                    showStatus(`❌ 验证失败`, 3000);
-                }
-            }, 1000);
-        }
-        // ==================== GitHub 在线更新功能（优化版） ====================
-        function initUpdateCheck() {
-            const GITHUB_UPDATE_CONFIG = {
-                updateJsonUrl: "https://raw.githubusercontent.com/你的GitHub用户名/exam-helper-auto-update/main/update.json",
-                currentVersion: "3.6",  // 必须与脚本头部 @version 一致
-                cacheExpire: 3600000  // 缓存1小时，避免频繁请求GitHub
-            };
-
-            // 版本对比工具（支持 x.y.z 格式，兼容单/多位数版本）
-            function compareVersions(v1, v2) {
-                const arr1 = v1.split(".").map(Number);
-                const arr2 = v2.split(".").map(Number);
-                const maxLen = Math.max(arr1.length, arr2.length);
-                for (let i = 0; i < maxLen; i++) {
-                    const num1 = arr1[i] || 0;
-                    const num2 = arr2[i] || 0;
-                    if (num1 !== num2) return num1 - num2;
-                }
-                return 0;
-            }
-
-            // 检测更新（带缓存逻辑）
-            async function checkForUpdate(manualCheck = false) {
-                // 优先读取缓存，避免重复请求
-                const cacheKey = "examHelperUpdateCache";
-                const cachedData = GM_getValue(cacheKey, null);
-                const now = Date.now();
-
-                // 缓存未过期且非手动检查，直接使用缓存
-                if (cachedData && now - cachedData.timestamp < GITHUB_UPDATE_CONFIG.cacheExpire && !manualCheck) {
-                    handleUpdateInfo(cachedData.updateInfo);
-                    return;
-                }
-
-                // 显示加载状态
-                if (manualCheck) showStatus("🔍 正在检查更新...", 2000);
-
-                try {
-                    const response = await fetch(GITHUB_UPDATE_CONFIG.updateJsonUrl, {
-                        method: "GET",
-                        cache: "no-cache",
-                        headers: { "Accept": "application/json" }
-                    });
-
-                    if (!response.ok) throw new Error(`HTTP错误：${response.status}`);
-                    const updateInfo = await response.json();
-
-                    // 缓存更新信息
-                    GM_setValue(cacheKey, {
-                        timestamp: now,
-                        updateInfo: updateInfo
-                    });
-
-                    handleUpdateInfo(updateInfo, manualCheck);
-                } catch (error) {
-                    console.warn("更新检测失败：", error);
-                    if (manualCheck) showStatus("❌ 更新检测失败，请检查网络", 3000);
-                }
-            }
-
-            // 处理更新信息（核心逻辑）
-            function handleUpdateInfo(updateInfo, manualCheck = false) {
-                const versionCompare = compareVersions(GITHUB_UPDATE_CONFIG.currentVersion, updateInfo.latestVersion);
-
-                // 有新版本
-                if (versionCompare < 0) {
-                    showUpdateAlert(updateInfo);
-                } 
-                // 当前是最新版本
-                else if (manualCheck) {
-                    showStatus("✅ 当前已是最新版本 v" + GITHUB_UPDATE_CONFIG.currentVersion, 2000);
-                }
-            }
-
-            // 显示更新提示弹窗（支持多版本日志+强制更新）
-            function showUpdateAlert(updateInfo) {
-                const existingAlert = document.getElementById("exam-helper-update-alert");
-                if (existingAlert) existingAlert.remove();
-
-                // 构建更新日志HTML
-                let changelogHtml = "";
-                updateInfo.changelog.forEach(log => {
-                    changelogHtml += `
-                        <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #f0f0f0;">
-                            <div style="font-size: 16px; font-weight: bold; color: #667eea; margin-bottom: 8px;">
-                                v${log.version}（${log.date}）
-                            </div>
-                            <ul style="text-align: left; margin: 0; padding-left: 20px; color: #666; font-size: 13px; line-height: 1.6;">
-                                ${log.content.map(item => `<li>${item}</li>`).join("")}
-                            </ul>
-                        </div>
-                    `;
-                });
-
-                // 弹窗样式
-                const alertDiv = document.createElement("div");
-                alertDiv.id = "exam-helper-update-alert";
-                alertDiv.style.cssText = `
-                    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                    background: white; padding: 25px; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-                    z-index: 10000; width: 90%; max-width: 450px; text-align: center;
-                    font-family: 'Microsoft YaHei', sans-serif;
-                `;
-
-                // 强制更新 vs 可选更新
-                const isForceUpdate = updateInfo.forceUpdate === true;
-                const buttonHtml = isForceUpdate ? `
-                    <button id="update-now-btn" style="
-                        background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
-                        color: white; border: none; padding: 12px 40px; border-radius: 25px;
-                        font-size: 16px; cursor: pointer; width: 100%;
-                    ">必须更新才能使用</button>
-                ` : `
-                    <button id="update-now-btn" style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        color: white; border: none; padding: 10px 30px; border-radius: 20px;
-                        font-size: 16px; cursor: pointer; margin-right: 10px;
-                    ">立即更新</button>
-                    <button id="skip-update-btn" style="
-                        background: #f5f5f5; color: #666; border: none; padding: 10px 20px;
-                        border-radius: 20px; font-size: 14px; cursor: pointer;
-                    ">稍后再说</button>
-                `;
-
-                alertDiv.innerHTML = `
-                    <div style="font-size: 22px; font-weight: bold; margin-bottom: 15px; color: #333;">
-                        📢 发现新版本 v${updateInfo.latestVersion}
-                    </div>
-                    <div style="max-height: 200px; overflow-y: auto; margin-bottom: 20px;">
-                        ${changelogHtml}
-                    </div>
-                    <div style="display: flex; justify-content: center; gap: 10px;">
-                        ${buttonHtml}
-                    </div>
-                    ${isForceUpdate ? '<div style="margin-top: 10px; font-size: 12px; color: #ff4757;">此更新包含关键修复，必须升级才能继续使用</div>' : ''}
-                `;
-
-                document.body.appendChild(alertDiv);
-
-                // 立即更新：跳转至Raw链接触发Tampermonkey更新
-                document.getElementById("update-now-btn").addEventListener("click", () => {
-                    window.open(updateInfo.updateURL || updateInfo.downloadURL, "_blank");
-                    if (!isForceUpdate) alertDiv.remove();
-                });
-
-                // 稍后再说：关闭弹窗（强制更新时隐藏该按钮）
-                if (!isForceUpdate) {
-                    document.getElementById("skip-update-btn").addEventListener("click", () => {
-                        alertDiv.remove();
-                        // 记录跳过时间，24小时内不再提示
-                        GM_setValue("examHelperSkipUpdate", {
-                            version: updateInfo.latestVersion,
-                            timestamp: Date.now()
-                        });
-                    });
-                }
-            }
-
-            // 初始化更新检测
-            function init() {
-                // 检查是否跳过了当前版本（24小时内）
-                const skipInfo = GM_getValue("examHelperSkipUpdate", null);
-                const now = Date.now();
-                let updateInfo = null;
-                const needCheck = !skipInfo || 
-                                  (updateInfo && skipInfo.version !== updateInfo.latestVersion) || 
-                                  now - (skipInfo.timestamp || 0) > 86400000;
-
-                // 自动检测更新（3秒后执行，避免阻塞主程序）
-                if (needCheck) {
-                    setTimeout(() => checkForUpdate(), 3000);
-                }
-
-                // 新增“检查更新”按钮（放在控制面板顶部）
-                const updateBtn = document.createElement("button");
-                updateBtn.id = "exam-helper-update";
-                updateBtn.className = "exam-helper-btn";
-                updateBtn.style.cssText = `
-                    right: 20px; bottom: 300px; 
-                    background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%); 
-                    color: white; padding: 8px 12px; border-radius: 20px; font-size: 12px;
-                `;
-                updateBtn.innerHTML = "🔍 检查更新";
-                updateBtn.title = "手动检查GitHub最新版本";
-                document.body.appendChild(updateBtn);
-
-                // 绑定手动检查事件
-                updateBtn.addEventListener("click", () => checkForUpdate(true));
-            }
-
-            // 执行初始化
-            init();
-        }
-
-        // 主程序初始化（添加自动交卷快捷键）
-        function init() {
-            console.log('🎯 初始化答题助手主程序（30题适配+GitHub更新）');
-            const isVideoPage = IDCardAuth.isVideoPage();
-            if (isVideoPage) {
-                console.log('🔥 检测到视频题页面，启用特殊模式');
-                document.body.classList.add('exam-helper-video-mode');
-            }
-            createAuthBadge();
-            createControlPanel();
-            const startBtn = document.getElementById('exam-helper-start');
-            const stopBtn = document.getElementById('exam-helper-stop');
-            const checkBtn = document.getElementById('exam-helper-check');
-            const infoBtn = document.getElementById('exam-helper-info');
-            if (startBtn && !startBtn._hasListener) {
-                startBtn.addEventListener('click', function() {
-                    showStatus('🚀 开始答题(30题)...', 1000);
-                    setTimeout(startAutoAnswer, 500);
-                });
-                startBtn._hasListener = true;
-            }
-            if (stopBtn && !stopBtn._hasListener) {
-                stopBtn.addEventListener('click', stopAutoAnswer);
-                stopBtn._hasListener = true;
-            }
-            if (checkBtn && !checkBtn._hasListener) {
-                checkBtn.addEventListener('click', checkAnsweredQuestions);
-                checkBtn._hasListener = true;
-            }
-            if (infoBtn && !infoBtn._hasListener) {
-                infoBtn.addEventListener('click', showLicenseInfo);
-                infoBtn._hasListener = true;
-            }
-            showStatus('✅ 助手已就绪(30题+GitHub更新)', 2000);
-            // 快捷键配置
-            if (!document._examHelperKeyListener) {
-                document.addEventListener('keydown', function(e) {
-                    if (e.ctrlKey && e.altKey && e.key === 's') {
-                        startAutoAnswer();
-                    }
-                    if (e.ctrlKey && e.altKey && e.key === 'p') {
-                        stopAutoAnswer();
-                    }
-                    if (e.ctrlKey && e.altKey && e.key === 'c') {
-                        checkAnsweredQuestions();
-                    }
-                    // 自动交卷快捷键（Ctrl+Alt+A）
-                    if (e.ctrlKey && e.altKey && e.key === 'a') {
-                        document.getElementById('exam-helper-auto-submit').click();
-                    }
-                });
-                document._examHelperKeyListener = true;
-            }
-            console.log('🎉 答题助手已完全加载（30题适配+GitHub更新）');
-            
-            // 调用GitHub更新功能初始化
-            initUpdateCheck();
-        }
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() {
-                setTimeout(init, 1500);
-            });
-        } else {
-            setTimeout(init, 1500);
         }
     }
-    // 显示页面验证要求（保持原逻辑）
-    function showPageVerificationRequired(idCard) {
-        const verifyDiv = document.createElement('div');
-        verifyDiv.id = 'page-verification';
-        verifyDiv.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%);
-            z-index: 9999;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            font-family: 'Microsoft YaHei', sans-serif;
-        `;
-        verifyDiv.innerHTML = `
-            <div style="
-                background: rgba(255, 255, 255, 0.95);
-                border-radius: 20px;
-                padding: 40px;
-                width: 90%;
-                max-width: 500px;
-                text-align: center;
-                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            ">
-                <div style="margin-bottom: 30px;">
-                    <div style="font-size: 60px; margin-bottom: 10px;">🔄</div>
-                    <div style="font-size: 24px; font-weight: bold; color: #333; margin-bottom: 10px;">需要重新验证身份</div>
-                    <div style="font-size: 14px; color: #666; margin-bottom: 25px;">
-                        系统检测到页面身份信息可能已变更<br>
-                        需要重新验证您的身份信息
-                    </div>
-                </div>
-                <div style="margin-bottom
+})();
