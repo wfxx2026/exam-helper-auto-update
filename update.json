@@ -1,13 +1,14 @@
 {
-  "latestVersion": "3.6",
+  "latestVersion": "3.7",
   "updateURL": "https://raw.githubusercontent.com/wfxx2026/exam-helper-auto-update/main/main.user.js",
   "downloadURL": "https://raw.githubusercontent.com/wfxx2026/exam-helper-auto-update/main/main.user.js",
   "forceUpdate": false,
   "changelog": [
     {
-      "version": "3.6",
+      "version": "3.7",
       "date": "2026-01-28",
       "content": [
+        "新增学习排名推送功能"
         "✅ 新增GitHub在线自动更新功能，支持自动检测+一键升级",
         "⚡ 优化30题答题逻辑，适配更多考试页面结构",
         "📤 完善自动交卷流程，新增SleepClose函数调用，适配结束考试按钮",
