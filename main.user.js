@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         全员答题-（半自动交卷版30题）
 // @namespace    https://github.com/yourname
-// @version      3.6
+// @version      3.7
 // @description  自动答题0.1秒(模拟考试^手机考试)适配30题 | 支持GitHub在线更新
 // @author       © 2026 晚风叙信 ✯
 // @icon         https://i.imgs.ovh/2026/01/27/yslWBh.jpeg
