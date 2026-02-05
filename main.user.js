@@ -1134,14 +1134,7 @@
             document.body.appendChild(statusDiv);
             window._examHelperElements.statusDiv = statusDiv;
             
-            // 信息按钮
-            const infoBtn = document.createElement('button');
-            infoBtn.id = 'exam-helper-info';
-            infoBtn.className = 'exam-helper-btn exam-helper-btn-info';
-            infoBtn.innerHTML = 'ℹ️';
-            infoBtn.title = '显示授权信息';
-            document.body.appendChild(infoBtn);
-            window._examHelperElements.infoBtn = infoBtn;
+            
             
             // 排名查询按钮
             const rankBtn = document.createElement('button');
@@ -1171,14 +1164,7 @@
             document.body.appendChild(stopBtn);
             window._examHelperElements.stopBtn = stopBtn;
             
-            // 检查按钮
-            const checkBtn = document.createElement('button');
-            checkBtn.id = 'exam-helper-check';
-            checkBtn.className = 'exam-helper-btn exam-helper-btn-check';
-            checkBtn.innerHTML = '✓检查进度';
-            checkBtn.title = '检查已答题目 (Ctrl+Alt+C)';
-            document.body.appendChild(checkBtn);
-            window._examHelperElements.checkBtn = checkBtn;
+            
             
             // 自动交卷按钮
             const autoSubmitBtn = document.createElement('button');
